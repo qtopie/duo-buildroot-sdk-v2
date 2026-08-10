@@ -26,3 +26,4 @@ ncscope.*
 
 __pycache__
 .vscode
+.agents/TASK.md
