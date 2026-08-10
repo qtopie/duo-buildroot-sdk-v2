@@ -29,6 +29,7 @@ set_gpio ${host_wake_bt} 1
 insmod /mnt/system/ko/aic8800_bsp.ko
 sleep 0.5
 insmod /mnt/system/ko/aic8800_fdrv.ko
+insmod /mnt/system/ko/aic8800_btlpm.ko
 
 # Insmod PWM Module
 insmod /mnt/system/ko/cv181x_pwm.ko

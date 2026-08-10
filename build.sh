@@ -122,7 +122,7 @@ function get_toolchain()
     toolchain_url="https://github.com/milkv-duo/host-tools.git"
     echo "toolchain_url: ${toolchain_url}"
 
-    git clone ${toolchain_url}
+    git clone --depth 1 --single-branch ${toolchain_url}
     if [ $? -ne 0 ]; then
       show_err "Failed to download ${toolchain_url} !"
       exit 1

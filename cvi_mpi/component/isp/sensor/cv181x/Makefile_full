@@ -11,6 +11,14 @@ endif
 #
 SRCS = $(shell find $(sensor-y) -name '*.c')
 OBJS = $(SRCS:.c=.o) $(SENSOR_LIST_INC)/sensor_list.o
+
+# Add include paths for sensor source compilation (matching sub-dir Makefiles)
+INCS = -I$(MW_INC) -I$(ISP_INC) -I$(KERNEL_INC) -I./include
+EXTRA_CFLAGS = $(INCS)
+
+%.o: %.c
+	@$(CC) $(DEPFLAGS) $(CFLAGS) $(EXTRA_CFLAGS) -c $< -o $@
+	@echo [$(notdir $(CC))] $(notdir $@)
 #
 TARGET_A = $(MW_LIB)/libsns_full.a
 TARGET_SO = $(MW_LIB)/libsns_full.so

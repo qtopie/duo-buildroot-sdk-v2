@@ -2,6 +2,10 @@
 install/
 out/
 
+# build artifacts produced by pack_* stages
+buildroot/board/milkv/
+buildroot/br.log
+
 host-tools
 host-tools/
 
