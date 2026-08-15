@@ -1,9 +1,31 @@
 #!/bin/sh
-# Online rootfs expander for eMMC
+# Adaptive rootfs expander for both eMMC and SD card
 case "$1" in
   start)
-    echo "Checking and expanding rootfs /dev/mmcblk0p4..."
-    resize2fs /dev/mmcblk0p4 >/var/log/expand-rootfs.log 2>&1 || true
+    # Find current root filesystem source device (e.g., /dev/mmcblk0p3 or /dev/mmcblk0p4)
+    ROOT_DEV=$(awk '$2 == "/" {print $1}' /proc/mounts 2>/dev/null)
+    if [ -z "$ROOT_DEV" ] || [ ! -b "$ROOT_DEV" ]; then
+      ROOT_DEV="/dev/mmcblk0p4"
+    fi
+
+    # Check if this is an MMC partition (e.g., /dev/mmcblk0p3 -> DISK=/dev/mmcblk0, PART_NUM=3)
+    case "$ROOT_DEV" in
+      *mmcblk*p*)
+        DISK=$(echo "$ROOT_DEV" | sed 's/p[0-9]*$//')
+        PART_NUM=$(echo "$ROOT_DEV" | sed 's/.*p//')
+        # If parted exists and it's an MBR disk (SD Card mode), expand partition table entry first
+        if command -v parted >/dev/null 2>&1 && [ -b "$DISK" ] && [ -n "$PART_NUM" ]; then
+          echo "Expanding partition $PART_NUM on $DISK..."
+          parted -s "$DISK" resizepart "$PART_NUM" 100% >/dev/null 2>&1 || true
+        fi
+        ;;
+    esac
+
+    # Resize ext4 filesystem to fill the partition
+    if [ -b "$ROOT_DEV" ]; then
+      echo "Resizing ext4 filesystem on $ROOT_DEV..."
+      resize2fs "$ROOT_DEV" >/var/log/expand-rootfs.log 2>&1 || true
+    fi
     ;;
   *)
     ;;
