@@ -1,0 +1,3 @@
+#!/bin/sh
+# Disabled in favor of NetGuard udhcpc to avoid dual-DHCP and DNS conflict
+exit 0

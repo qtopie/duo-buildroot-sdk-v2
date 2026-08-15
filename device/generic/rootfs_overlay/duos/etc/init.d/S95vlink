@@ -1,0 +1,97 @@
+#!/bin/sh
+#
+# vlink proxy client autostart
+# - Ensures network route exists (via USB NAT if no WiFi route yet)
+# - Sets DNS
+# - Syncs clock (HTTP Date header primary, ntpdate backup)
+# - Starts vlink
+#
+
+PROG=/usr/local/bin/vlink
+CONF=/etc/vlink/config.json
+PIDFILE=/var/run/vlink.pid
+LOGFILE=/var/log/vlink.log
+GW=192.168.42.2
+USBIF=usb0
+NTPSERVERS="ntp.tuna.tsinghua.edu.cn ntp.ntsc.ac.cn"
+
+sync_clock() {
+    # only need sync when clock is in 1970 (unsafe for TLS)
+    [ "$(date +%Y)" != "1970" ] && return 0
+    i=0
+    while [ $i -lt 18 ]; do
+        if ip route show default | grep -q .; then
+            # primary: HTTP Date header (works even when busybox ntpdate fails on 1970 clock)
+            for url in "http://www.baidu.com" "http://example.com" "http://www.google.com"; do
+                d=$(wget -S --spider -T 4 -q "$url" 2>&1 | grep -i "^  Date:" | sed "s/^  Date: //" | head -1)
+                if [ -n "$d" ] && date -s "$d" 2>/dev/null; then
+                    return 0
+                fi
+            done
+            # fallback: ntpdate (try each server)
+            for srv in $NTPSERVERS; do
+                ntpdate -u $srv 2>/dev/null && return 0
+            done
+        fi
+        sleep 5
+        i=$((i+1))
+    done
+    return 1
+}
+
+start() {
+    echo "vlink: checking network route..."
+    HOST_IP=$(awk '{print $1}' /var/lib/misc/udhcpd.leases 2>/dev/null | head -1)
+    [ -z "$HOST_IP" ] && HOST_IP=192.168.42.5
+    if ip route show default | grep -q "169.254"; then
+        ip route del default dev wlan0 2>/dev/null
+    fi
+    if ! ip route show default | grep -q .; then
+        echo "vlink: adding default route via $HOST_IP dev $USBIF..."
+        ip route add default via $HOST_IP dev $USBIF 2>/dev/null
+    fi
+
+    echo "vlink: setting up DNS..."
+    echo "nameserver 8.8.8.8" > /etc/resolv.conf
+    echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+
+    echo "vlink: syncing system clock (waiting for network)..."
+    if sync_clock; then
+        echo "vlink: clock OK ($(date -u +%F\ %T))"
+    else
+        echo "vlink: WARNING clock not synced"
+    fi
+
+    echo "Starting vlink..."
+    if [ ! -f "$CONF" ]; then
+        echo "ERROR: config $CONF not found"
+        exit 1
+    fi
+    start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$PROG" -- -config "$CONF" >> "$LOGFILE" 2>&1
+    echo "vlink started (pid $(cat $PIDFILE 2>/dev/null))"
+}
+
+stop() {
+    echo "Stopping vlink..."
+    start-stop-daemon -K -q -p "$PIDFILE" 2>/dev/null
+    rm -f "$PIDFILE"
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        sleep 1
+        start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+esac
+
+exit $?

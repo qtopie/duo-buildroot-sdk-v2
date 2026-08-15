@@ -1,0 +1,55 @@
+#!/bin/sh
+# netguard - Duo S 自适应网络守护 + Web 配置服务
+# busybox init: rcS 按数值顺序执行, S97 在 S95vlink/S96cosmos-star 之后, S99user(auto.sh) 之前
+#
+# 组件:
+#   /usr/local/bin/netguard.sh      守护状态机 (STA_OK/STA_RETRY/AP)
+#   /usr/local/bin/netguard-config  Web 配置服务 (0.0.0.0:80, AP 下手机访问 192.168.5.1)
+#   /usr/local/bin/netap-ctl.sh     AP 起停控制
+#   /etc/netguard/netguard.conf     (可选) 参数覆盖: CYCLE/STA_TTL/AP_MIN_UP/AP_SSID/AP_PASS
+#   /etc/netguard/hostapd.conf      AP 配置 (由 netguard.sh 生成)
+
+PROG=/usr/local/bin/netguard.sh
+WEB=/usr/local/bin/netguard-config
+APCTL=/usr/local/bin/netap-ctl.sh
+PID=/var/run/netguard.pid
+WEB_PID=/var/run/netguard-config.pid
+LOG=/var/log/netguard.log
+
+start() {
+    mkdir -p /var/run/netguard /etc/netguard
+    # 守护状态机
+    if [ -f "$PID" ] && kill -0 "$(cat "$PID" 2>/dev/null)" 2>/dev/null; then
+        echo "netguard: already running (pid $(cat "$PID"))"
+    else
+        nohup setsid "$PROG" >> "$LOG" 2>&1 &
+        echo $! > "$PID"
+        echo "netguard: started (pid $(cat "$PID"))"
+    fi
+    # Web 配置服务
+    if [ -f "$WEB_PID" ] && kill -0 "$(cat "$WEB_PID" 2>/dev/null)" 2>/dev/null; then
+        echo "netguard-config: already running (pid $(cat "$WEB_PID"))"
+    else
+        nohup setsid "$WEB" >> "$LOG" 2>&1 &
+        echo $! > "$WEB_PID"
+        echo "netguard-config: started (pid $(cat "$WEB_PID"))"
+    fi
+}
+
+stop() {
+    [ -f "$PID" ] && kill "$(cat "$PID" 2>/dev/null)" 2>/dev/null
+    [ -f "$WEB_PID" ] && kill "$(cat "$WEB_PID" 2>/dev/null)" 2>/dev/null
+    rm -f "$PID" "$WEB_PID"
+    # 恢复 STA 常态
+    "$APCTL" stop 2>/dev/null
+    echo "netguard: stopped"
+}
+
+case "$1" in
+    start)  start ;;
+    stop)   stop ;;
+    restart) stop; sleep 1; start ;;
+    *)
+        echo "usage: $0 {start|stop|restart}" >&2
+        exit 1 ;;
+esac

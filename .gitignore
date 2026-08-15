@@ -32,3 +32,12 @@ components/
 copilot-infra.*
 data.db*
 
+# ---- Duo S custom overlay binaries (rebuilt from source / downloaded at build time) ----
+# 这些二进制不入 git：cosmos-star/vlink 由运行时 OTA 或源码交叉编译安装；
+# hostapd/netguard-config 由主仓库 netguard/ 源码构建；udhcpd 来自 SDK ramdisk 内置。
+device/generic/rootfs_overlay/duos/usr/local/bin/hostapd
+device/generic/rootfs_overlay/duos/usr/local/bin/vlink
+device/generic/rootfs_overlay/duos/usr/local/bin/netguard-config
+device/generic/rootfs_overlay/duos/usr/local/bin/cosmos-star
+device/generic/rootfs_overlay/duos/usr/local/bin/udhcpd
+

@@ -1,0 +1,46 @@
+#!/bin/sh
+#
+# cosmos-star (Edge Node) autostart
+#
+
+PROG=/usr/local/bin/cosmos-star
+PIDFILE=/var/run/cosmos-star.pid
+LOGFILE=/var/log/cosmos-star.log
+DATA_DIR=/var/lib/cosmos-star
+
+start() {
+    echo "Starting cosmos-star..."
+    if [ ! -x "$PROG" ]; then
+        echo "ERROR: $PROG not found or not executable"
+        exit 1
+    fi
+    mkdir -p "$DATA_DIR" /var/run /var/log
+    # Run with default edge configuration
+    start-stop-daemon -S -q -b -m -p "$PIDFILE" -d "$DATA_DIR" -x "$PROG" -- >> "$LOGFILE" 2>&1
+    echo "cosmos-star started (pid $(cat $PIDFILE 2>/dev/null))"
+}
+
+stop() {
+    echo "Stopping cosmos-star..."
+    start-stop-daemon -K -q -p "$PIDFILE" 2>/dev/null
+    rm -f "$PIDFILE"
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        sleep 1
+        start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+esac
+
+exit $?

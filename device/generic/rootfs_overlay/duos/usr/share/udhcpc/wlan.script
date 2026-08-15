@@ -1,0 +1,67 @@
+#!/bin/sh
+# wlan-specific udhcpc script
+# 以 metric 100 添加路由，与有线默认路由共存，不写死网段
+
+[ -z "$1" ] && echo "Error: should be called from udhcpc" && exit 1
+
+RESOLV_CONF="/etc/resolv.conf"
+METRIC=100
+
+# 将点分十进制子网掩码转换为前缀长度（如 255.255.255.0 → 24）
+mask2prefix() {
+    local mask="$1"
+    local prefix=0
+    local IFS=.
+    for octet in $mask; do
+        case "$octet" in
+            255) prefix=$((prefix + 8)) ;;
+            254) prefix=$((prefix + 7)) ;;
+            252) prefix=$((prefix + 6)) ;;
+            248) prefix=$((prefix + 5)) ;;
+            240) prefix=$((prefix + 4)) ;;
+            224) prefix=$((prefix + 3)) ;;
+            192) prefix=$((prefix + 2)) ;;
+            128) prefix=$((prefix + 1)) ;;
+        esac
+    done
+    echo "$prefix"
+}
+
+case "$1" in
+    deconfig)
+        ip addr flush dev "$interface" 2>/dev/null
+        ip route flush dev "$interface" 2>/dev/null
+        ;;
+    renew|bound)
+        # 计算实际前缀长度，DHCP 没给 subnet 时默认 /24
+        if [ -n "$subnet" ]; then
+            PREFIX=$(mask2prefix "$subnet")
+        else
+            PREFIX=24
+        fi
+
+        # 配置 IP 地址
+        ip addr flush dev "$interface" 2>/dev/null
+        ip addr add "$ip/$PREFIX" brd "${broadcast:-+}" dev "$interface" 2>/dev/null
+
+        # 添加子网直连路由
+        ip route replace "$ip/$PREFIX" dev "$interface" 2>/dev/null || true
+
+        # 添加默认网关，metric 100（低于有线优先级，共存而不冲突）
+        for gw in $router; do
+            ip route replace default via "$gw" dev "$interface" metric "$METRIC" 2>/dev/null || true
+        done
+
+        # 更新 DNS (优先公共高速 DNS 223.5.5.5，避免路由器 DNS 慢导致代理卡顿)
+        TMPFILE=$(mktemp)
+        grep -vE "# $interface$" "$RESOLV_CONF" > "$TMPFILE" 2>/dev/null
+        cat "$TMPFILE" > "$RESOLV_CONF"
+        rm -f "$TMPFILE"
+        echo "nameserver 223.5.5.5 # $interface" >> "$RESOLV_CONF"
+        echo "nameserver 119.29.29.29 # $interface" >> "$RESOLV_CONF"
+        for ns in $dns; do
+            echo "nameserver $ns # $interface" >> "$RESOLV_CONF"
+        done
+        ;;
+esac
+exit 0
