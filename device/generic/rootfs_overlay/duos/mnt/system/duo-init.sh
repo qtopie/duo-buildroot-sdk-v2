@@ -26,6 +26,16 @@ host_wake_bt=362
 set_gpio ${host_wake_bt} 1
 
 # WIFI/BT Module
+# Auto-generate and persist unique MAC address on first boot
+INI_FILE="/mnt/system/firmware/aic8800/rwnx_settings.ini"
+if [ ! -f "$INI_FILE" ] || ! grep -q "MAC_ADDR=" "$INI_FILE"; then
+	mkdir -p /mnt/system/firmware/aic8800
+	R1=$(hexdump -n 1 -e '1/1 "%02x"' /dev/urandom 2>/dev/null || echo "ab")
+	R2=$(hexdump -n 1 -e '1/1 "%02x"' /dev/urandom 2>/dev/null || echo "9c")
+	echo "MAC_ADDR=88:00:33:77:${R1}:${R2}" > "$INI_FILE"
+	sync
+fi
+
 insmod /mnt/system/ko/aic8800_bsp.ko
 sleep 0.5
 insmod /mnt/system/ko/aic8800_fdrv.ko
