@@ -3,8 +3,15 @@
 TOP_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 cd ${TOP_DIR}
 
-if [ -d "/home/qtopierw/opt-cmake/bin" ]; then
-  export PATH="/home/qtopierw/opt-cmake/bin:$PATH"
+# CMake 策略：优先使用系统 cmake（>=4.0 需声明最低兼容版本 3.5，
+# 否则 SDK 内大量 cmake_minimum_required(2.8.0) 的组件会配置失败）；
+# 系统无 cmake 时回退到 ~/opt-cmake 的 cmake 3.x。
+if command -v cmake >/dev/null 2>&1; then
+  export CMAKE_POLICY_VERSION_MINIMUM=3.5
+else
+  if [ -d "/home/qtopierw/opt-cmake/bin" ]; then
+    export PATH="/home/qtopierw/opt-cmake/bin:$PATH"
+  fi
 fi
 
 function show_info()
