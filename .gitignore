@@ -27,3 +27,8 @@ ncscope.*
 __pycache__
 .vscode
 .agents/TASK.md
+.logs/
+components/
+copilot-infra.*
+data.db*
+

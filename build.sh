@@ -3,6 +3,10 @@
 TOP_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 cd ${TOP_DIR}
 
+if [ -d "/home/qtopierw/opt-cmake/bin" ]; then
+  export PATH="/home/qtopierw/opt-cmake/bin:$PATH"
+fi
+
 function show_info()
 {
   printf "\e[1;94m%s\e[0m\n" "$1"
