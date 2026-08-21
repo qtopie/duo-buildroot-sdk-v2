@@ -6,8 +6,10 @@
 #   netguard (S97) 联网后负责 IPv4/DNS，本脚本后台等待网络就绪再同步时钟，
 #   时间修正后 vlink 的新 TLS 连接即恢复正常，无需重启守护进程。
 # - Security: 镜像内 /etc/vlink/config.json 为无凭据模板，server 为空。
-#   cosmos-star (S96) 首次运行会注入真实 ss:// 凭据并负责启动 vlink，
+#   cosmos-star (S96) 会在运行后注入真实 ss:// 凭据并负责管理 vlink，
 #   本脚本在凭据缺失时仅做时间同步，不启动 vlink（避免 log.Fatal 崩溃循环）。
+# - Watchdog: 后台循环监视 config.json，一旦 cosmos-star 注入有效凭据且
+#   vlink 未运行，则自动启动 vlink（兼容注入时机不固定的情况）。
 #
 
 PROG=/usr/local/bin/vlink
@@ -19,6 +21,11 @@ LOGFILE=/var/log/vlink.log
 has_credentials() {
     [ -f "$CONF" ] || return 1
     grep -q '"server"[[:space:]]*:[[:space:]]*"ss://' "$CONF" 2>/dev/null
+}
+
+# vlink 是否在运行
+vlink_running() {
+    pidof vlink >/dev/null 2>&1
 }
 
 # 后台循环同步时间直到成功（最多 ~300s），不阻塞启动
@@ -38,6 +45,17 @@ sync_clock_loop() {
     return 1
 }
 
+# 后台循环监视凭据注入：凭据出现且 vlink 未运行时自动启动（兼容 cosmos-star 注入）
+vlink_watchdog() {
+    while :; do
+        if has_credentials && ! vlink_running; then
+            echo "vlink: credentials detected, starting vlink" >> "$LOGFILE"
+            start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$PROG" -- -config "$CONF" >> "$LOGFILE" 2>&1
+        fi
+        sleep 10
+    done
+}
+
 start() {
     if [ ! -f "$CONF" ]; then
         echo "ERROR: config $CONF not found"
@@ -50,8 +68,10 @@ start() {
         start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$PROG" -- -config "$CONF" >> "$LOGFILE" 2>&1
         echo "vlink started (pid $(cat $PIDFILE 2>/dev/null))"
     else
-        echo "vlink: no credentials in $CONF yet, waiting for cosmos-star to provision..." | tee -a "$LOGFILE"
+        echo "vlink: no credentials in $CONF yet, watchdog will start vlink once cosmos-star injects..." | tee -a "$LOGFILE"
     fi
+    # 凭据注入监视循环（后台）
+    vlink_watchdog &
 }
 
 stop() {
