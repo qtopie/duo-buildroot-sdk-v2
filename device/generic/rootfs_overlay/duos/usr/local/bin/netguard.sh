@@ -76,6 +76,33 @@ wifi_completed() {
     [ "$st" = "COMPLETED" ] && ip -4 addr show dev "$IFACE" 2>/dev/null | grep -q 'inet '
 }
 
+# 确保 wlan0 在 COMPLETED 后能拿到 IPv4（udhcpc 按需启动，幂等）
+ensure_wlan_ipv4() {
+    st=$(wpa_cli -i "$IFACE" status 2>/dev/null | sed -n 's/^wpa_state=//p')
+    [ "$st" = "COMPLETED" ] || return 0
+    ip -4 addr show dev "$IFACE" 2>/dev/null | grep -q 'inet ' && return 0
+    pidof udhcpc >/dev/null 2>&1 && return 0
+    log "wlan0 COMPLETED but no IPv4, starting udhcpc"
+    udhcpc -i "$IFACE" -s /usr/share/udhcpc/wlan.script -b 2>/dev/null || true
+}
+
+# 网络就绪后同步时间（启动时时钟=1970 会导致 TLS 握手失败）
+TIME_SYNCED=0
+ensure_time_sync() {
+    [ "$TIME_SYNCED" = 1 ] && return 0
+    y=$(date +%Y 2>/dev/null)
+    [ -n "$y" ] && [ "$y" -ge 2025 ] && { TIME_SYNCED=1; return 0; }
+    d=$(curl -sI --max-time 5 http://223.5.5.5 2>/dev/null | grep -i '^Date:' | cut -d' ' -f2-)
+    if [ -n "$d" ]; then
+        date -s "$d" 2>/dev/null && { log "time synced: $(date)"; TIME_SYNCED=1; }
+    fi
+}
+
+set_state() {
+    echo "$1" > "$STATE_FILE"
+    [ "$1" = "STA_OK" ] && ensure_time_sync
+}
+
 wpa_running() { pidof wpa_supplicant >/dev/null 2>&1; }
 
 # AP 是否真正在跑（pid 文件 + 进程存活双检查）
@@ -219,15 +246,16 @@ main() {
             if ! wpa_running && has_network_block; then
                 log "wired up, also starting wpa_supplicant for WiFi (best-effort)"
                 wpa_supplicant -B -i "$IFACE" -c "$WPA_CONF" 2>/dev/null
-                # 用专属 wlan.script 运行 udhcpc，自动以 metric 100 添加路由，与有线不冲突
-                udhcpc -i "$IFACE" -s /usr/share/udhcpc/wlan.script -q -n 2>/dev/null || true
             fi
+            # wlan0 COMPLETED 但无 IPv4 时按需补跑 udhcpc（幂等）
+            ensure_wlan_ipv4
             set_state STA_OK
             sleep "$CYCLE"
             continue
         fi
 
         # ---- 2. 已连上 WiFi ----
+        ensure_wlan_ipv4
         if wifi_completed; then
             if ap_running; then
                 log "wifi connected, leaving AP"
