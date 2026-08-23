@@ -29,8 +29,8 @@ mask2prefix() {
 
 case "$1" in
     deconfig)
-        ip addr flush dev "$interface" 2>/dev/null
-        ip route flush dev "$interface" 2>/dev/null
+        ip -4 addr flush dev "$interface" 2>/dev/null
+        ip -4 route flush dev "$interface" 2>/dev/null
         ;;
     renew|bound)
         # 计算实际前缀长度，DHCP 没给 subnet 时默认 /24
@@ -41,7 +41,7 @@ case "$1" in
         fi
 
         # 配置 IP 地址
-        ip addr flush dev "$interface" 2>/dev/null
+        ip -4 addr flush dev "$interface" 2>/dev/null
         ip addr add "$ip/$PREFIX" brd "${broadcast:-+}" dev "$interface" 2>/dev/null
 
         # 添加子网直连路由
