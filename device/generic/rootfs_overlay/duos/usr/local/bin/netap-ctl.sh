@@ -34,8 +34,9 @@ restart_dnsmasq() {
 start_ap() {
     is_ap && { log "AP already running"; return 0; }
 
-    # 1. 停 STA，避免与 hostapd 抢 wlan0
+    # 1. 停 STA 与 udhcpc，避免与 hostapd 抢 wlan0
     killall wpa_supplicant 2>/dev/null
+    killall udhcpc 2>/dev/null
     sleep 1
 
     # 2. wlan0 切到 AP 模式（顺序参考实测：先配 IP up → down → set type ap → up）

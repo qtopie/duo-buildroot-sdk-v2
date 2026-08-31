@@ -13,12 +13,13 @@ STATE_FILE=/var/run/netguard/state
 RELOAD_MARKER=/var/run/netguard/reload
 NETAP_CTL=/usr/local/bin/netap-ctl.sh
 LOG=/var/log/netguard.log
+PERSIST_LOG=/mnt/data/netguard.log
 CFG=/etc/netguard/netguard.conf
 AP_CONF=/etc/netguard/hostapd.conf
 
 # 默认参数（可被 /etc/netguard/netguard.conf 覆盖）
 CYCLE=10          # 主循环周期(秒)
-STA_TTL=45        # 等待 COMPLETED 超时(秒)
+STA_TTL=25        # 等待 COMPLETED 超时(秒)
 AP_MIN_UP=120     # AP 最小持续时长(秒)，防抖
 BOOT_GRACE=10     # wlan0 出现后等待 S99auto.sh 处理 WiFi 的宽限(秒)
 AP_SSID=""
@@ -56,8 +57,29 @@ fi
 
 mkdir -p /var/run/netguard /etc/netguard
 
-log() { echo "$(date '+%F %T') [netguard] $*" >> "$LOG"; }
-set_state() { echo "$1" > "$STATE_FILE"; }
+log() {
+    msg="$(date '+%F %T') [netguard] $*"
+    echo "$msg" >> "$LOG"
+    echo "$msg" >> "$PERSIST_LOG" 2>/dev/null || true
+}
+set_state() {
+    echo "$1" > "$STATE_FILE"
+    current_led=$(/usr/local/bin/ledctl status 2>/dev/null || echo "unknown")
+    case "$1" in
+        STA_OK)
+            [ "$current_led" != "off" ] && [ -x /usr/local/bin/ledctl ] && /usr/local/bin/ledctl off
+            ;;
+        AP)
+            [ "$current_led" != "fast" ] && [ -x /usr/local/bin/ledctl ] && /usr/local/bin/ledctl fast
+            ;;
+        STA_RETRY)
+            [ "$current_led" != "slow" ] && [ -x /usr/local/bin/ledctl ] && /usr/local/bin/ledctl slow
+            ;;
+        ERROR)
+            [ "$current_led" != "on" ] && [ -x /usr/local/bin/ledctl ] && /usr/local/bin/ledctl on
+            ;;
+    esac
+}
 
 # 有线(usb0/eth0)是否有链路且拿到 IP
 wired_up() {
@@ -80,10 +102,13 @@ wifi_completed() {
 ensure_wlan_ipv4() {
     st=$(wpa_cli -i "$IFACE" status 2>/dev/null | sed -n 's/^wpa_state=//p')
     [ "$st" = "COMPLETED" ] || return 0
+    iw dev "$IFACE" set power_save off 2>/dev/null || true
     ip -4 addr show dev "$IFACE" 2>/dev/null | grep -q 'inet ' && return 0
-    pidof udhcpc >/dev/null 2>&1 && return 0
+    # 未拿到 IP 时杀掉旧 udhcpc 并启动新客户端
+    killall udhcpc 2>/dev/null
+    sleep 0.5
     log "wlan0 COMPLETED but no IPv4, starting udhcpc"
-    udhcpc -i "$IFACE" -s /usr/share/udhcpc/wlan.script -b 2>/dev/null || true
+    udhcpc -i "$IFACE" -s /usr/share/udhcpc/wlan.script -b -p /var/run/udhcpc.wlan0.pid 2>/dev/null || true
 }
 
 # 网络就绪后同步时间（启动时时钟=1970 会导致 TLS 握手失败）
@@ -117,6 +142,7 @@ start_wpa() {
     ip link set "$IFACE" down 2>/dev/null
     iw dev "$IFACE" set type managed 2>/dev/null
     ip link set "$IFACE" up 2>/dev/null
+    iw dev "$IFACE" set power_save off 2>/dev/null || true
     ip addr del 192.168.5.1/24 dev "$IFACE" 2>/dev/null
     if wpa_running; then
         wpa_cli -i "$IFACE" reconfigure 2>/dev/null
@@ -151,10 +177,11 @@ wait_completed() {
     ttl=$1
     i=0
     while [ "$i" -lt "$ttl" ]; do
+        ensure_wlan_ipv4
         wifi_completed && return 0
         wired_up && return 0
-        sleep 3
-        i=$((i + 3))
+        sleep 2
+        i=$((i + 2))
     done
     return 1
 }
@@ -279,7 +306,7 @@ main() {
                 sleep "$CYCLE"
                 continue
             fi
-            # 周期性检测：有线出现或已知网络可连 → 转 STA
+            # 周期性检测：有线出现或尝试重连已知 WiFi
             if wired_up; then
                 log "wired detected, leaving AP"
                 $NETAP_CTL stop
@@ -288,19 +315,22 @@ main() {
                 sleep "$CYCLE"
                 continue
             fi
-            if has_network_block && known_ssid_in_range; then
-                log "known network in range, leaving AP"
+            if has_network_block; then
+                log "periodically probing STA reconnect from AP mode"
                 $NETAP_CTL stop
                 start_wpa
                 if wait_completed "$STA_TTL"; then
+                    log "STA reconnect succeeded, staying in STA"
                     set_state STA_OK
+                    sleep "$CYCLE"
+                    continue
                 else
-                    log "STA reconnect failed, staying in AP"
+                    log "STA reconnect failed, returning to AP"
                     ap_on
                     set_state AP
+                    AP_START=$now
                 fi
             fi
-            AP_START=$now
             sleep "$CYCLE"
             continue
         fi
@@ -319,20 +349,16 @@ main() {
 
         if ! wpa_running; then
             start_wpa
-            sleep 5
         fi
 
-        if known_ssid_in_range; then
-            if wait_completed "$STA_TTL"; then
-                set_state STA_OK
-                sleep "$CYCLE"
-                continue
-            fi
-            log "STA connect timeout after ${STA_TTL}s"
-        else
-            log "no known ssid in range"
+        # 已配置有效 WiFi 时直接等待 wpa_supplicant 完成连接与获取 IP
+        if wait_completed "$STA_TTL"; then
+            set_state STA_OK
+            sleep "$CYCLE"
+            continue
         fi
 
+        log "STA connect timeout after ${STA_TTL}s, falling back to AP"
         # 连接失败 → AP 兜底
         ap_on
         set_state AP

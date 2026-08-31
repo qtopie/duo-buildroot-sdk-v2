@@ -1,0 +1,95 @@
+#!/bin/sh
+# /usr/local/bin/ledctl - Milk-V Duo S (SG2000) LED indicator controller
+#
+# Spec: specs/modules/led-indicator.spec.md
+# Modes:
+#   off   - 常灭 (STA_OK 正常运行)
+#   on    - 常亮 (ERROR 硬件故障/异常)
+#   slow  - 慢闪 1 Hz (STA_RETRY 开机/联网中)
+#   fast  - 快闪 ~3.3 Hz (AP 配网模式)
+#   status- 查询当前模式
+
+LED_PIN=509
+LED_DIR="${LED_GPIO_DIR:-/sys/class/gpio/gpio${LED_PIN}}"
+RUN_DIR="${LED_RUN_DIR:-/var/run}"
+PID_FILE="$RUN_DIR/ledctl.pid"
+MODE_FILE="$RUN_DIR/ledctl.mode"
+
+init_gpio() {
+    [ -d "$LED_DIR" ] && return 0
+    if [ -z "$LED_GPIO_DIR" ] && [ -e /sys/class/gpio/export ]; then
+        echo "$LED_PIN" > /sys/class/gpio/export 2>/dev/null || true
+    fi
+    if [ -d "$LED_DIR" ]; then
+        echo out > "$LED_DIR/direction" 2>/dev/null || true
+    fi
+}
+
+set_raw_value() {
+    init_gpio
+    if [ -f "$LED_DIR/value" ]; then
+        echo "$1" > "$LED_DIR/value" 2>/dev/null || true
+    fi
+}
+
+stop_blinker() {
+    if [ -f "$PID_FILE" ]; then
+        pid=$(cat "$PID_FILE" 2>/dev/null)
+        if [ -n "$pid" ]; then
+            kill "$pid" 2>/dev/null || true
+        fi
+        rm -f "$PID_FILE" 2>/dev/null || true
+    fi
+}
+
+start_blinker() {
+    interval="$1"
+    stop_blinker
+    (
+        while true; do
+            set_raw_value 1
+            sleep "$interval"
+            set_raw_value 0
+            sleep "$interval"
+        done
+    ) >/dev/null 2>&1 &
+    echo $! > "$PID_FILE"
+}
+
+mkdir -p "$RUN_DIR" 2>/dev/null || true
+
+CMD="${1:-status}"
+
+case "$CMD" in
+    off)
+        stop_blinker
+        set_raw_value 0
+        echo "off" > "$MODE_FILE"
+        ;;
+    on)
+        stop_blinker
+        set_raw_value 1
+        echo "on" > "$MODE_FILE"
+        ;;
+    slow)
+        # 1 Hz: 0.5s 亮 / 0.5s 灭
+        start_blinker 0.5
+        echo "slow" > "$MODE_FILE"
+        ;;
+    fast)
+        # ~3.3 Hz: 0.15s 亮 / 0.15s 灭
+        start_blinker 0.15
+        echo "fast" > "$MODE_FILE"
+        ;;
+    status)
+        if [ -f "$MODE_FILE" ]; then
+            cat "$MODE_FILE"
+        else
+            echo "unknown"
+        fi
+        ;;
+    *)
+        echo "Usage: ledctl {off|on|slow|fast|status}" >&2
+        exit 1
+        ;;
+esac
