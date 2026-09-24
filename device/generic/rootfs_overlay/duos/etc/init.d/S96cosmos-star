@@ -1,46 +1,56 @@
 #!/bin/sh
-#
-# cosmos-star (Edge Node) autostart
-#
-
 PROG=/usr/local/bin/cosmos-star
 PIDFILE=/var/run/cosmos-star.pid
 LOGFILE=/var/log/cosmos-star.log
-DATA_DIR=/var/lib/cosmos-star
+export UPDATE_INTERVAL=30s
 
-start() {
-    echo "Starting cosmos-star..."
-    if [ ! -x "$PROG" ]; then
-        echo "ERROR: $PROG not found or not executable"
-        exit 1
-    fi
-    mkdir -p "$DATA_DIR" /var/run /var/log
-    # Run with default edge configuration
-    start-stop-daemon -S -q -b -m -p "$PIDFILE" -d "$DATA_DIR" -x "$PROG" -- >> "$LOGFILE" 2>&1
-    echo "cosmos-star started (pid $(cat $PIDFILE 2>/dev/null))"
-}
-
-stop() {
-    echo "Stopping cosmos-star..."
-    start-stop-daemon -K -q -p "$PIDFILE" 2>/dev/null
-    rm -f "$PIDFILE"
+wait_route() {
+    i=0
+    while [ $i -lt 15 ]; do
+        if ip route show default | grep -q .; then
+            return 0
+        fi
+        if [ $i -ge 3 ] && ip -4 addr show scope global | grep -q 'inet '; then
+            return 0
+        fi
+        sleep 2
+        i=$((i+1))
+    done
+    return 0
 }
 
 case "$1" in
-    start)
-        start
-        ;;
-    stop)
-        stop
-        ;;
-    restart)
-        stop
+  start)
+    if [ -x "$PROG" ]; then
+      wait_route
+      echo "Starting cosmos-star (UPDATE_INTERVAL=30s)..."
+      mkdir -p /root/.cosmos-star/data /var/lib/cosmos-star/update
+      nohup setsid env HOME=/root UPDATE_INTERVAL=30s "$PROG" --config=/root/.config/cosmos-star/config.json >> "$LOGFILE" 2>&1 &
+      echo $! > "$PIDFILE"
+      echo "cosmos-star started (pid $(cat $PIDFILE))"
+    fi
+    ;;
+  stop)
+    echo "Stopping cosmos-star..."
+    if [ -f "$PIDFILE" ]; then
+      PID=$(cat "$PIDFILE")
+      kill -TERM "$PID" 2>/dev/null || true
+      i=0
+      while [ $i -lt 15 ] && kill -0 "$PID" 2>/dev/null; do
         sleep 1
-        start
-        ;;
-    *)
-        echo "Usage: $0 {start|stop|restart}"
-        exit 1
+        i=$((i+1))
+      done
+      kill -9 "$PID" 2>/dev/null || true
+      rm -f "$PIDFILE"
+    fi
+    ;;
+  restart)
+    $0 stop
+    sleep 2
+    $0 start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
 esac
-
-exit $?

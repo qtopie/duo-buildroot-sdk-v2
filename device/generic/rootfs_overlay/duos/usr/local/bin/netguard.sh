@@ -98,11 +98,22 @@ wifi_completed() {
     [ "$st" = "COMPLETED" ] && ip -4 addr show dev "$IFACE" 2>/dev/null | grep -q 'inet '
 }
 
-# 确保 wlan0 在 COMPLETED 后能拿到 IPv4（udhcpc 按需启动，幂等）
+# 确保 wlan0 在 COMPLETED 后能拿到 IPv4（支持 STATIC_IP 或 udhcpc 按需启动，幂等）
 ensure_wlan_ipv4() {
     st=$(wpa_cli -i "$IFACE" status 2>/dev/null | sed -n 's/^wpa_state=//p')
     [ "$st" = "COMPLETED" ] || return 0
     iw dev "$IFACE" set power_save off 2>/dev/null || true
+    if [ -n "$STATIC_IP" ]; then
+        if ! ip -4 addr show dev "$IFACE" 2>/dev/null | grep -q "inet $STATIC_IP/"; then
+            killall udhcpc 2>/dev/null
+            ip -4 addr flush dev "$IFACE" 2>/dev/null || true
+            ip addr add "${STATIC_IP}/${STATIC_NETMASK:-24}" dev "$IFACE"
+            [ -n "$STATIC_GATEWAY" ] && ip route replace default via "$STATIC_GATEWAY" dev "$IFACE" metric 100
+            [ -n "$STATIC_DNS" ] && echo "nameserver $STATIC_DNS" > /etc/resolv.conf
+            log "wlan0 configured with static IP $STATIC_IP"
+        fi
+        return 0
+    fi
     ip -4 addr show dev "$IFACE" 2>/dev/null | grep -q 'inet ' && return 0
     # 未拿到 IP 时杀掉旧 udhcpc 并启动新客户端
     killall udhcpc 2>/dev/null

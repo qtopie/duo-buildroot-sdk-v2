@@ -1,6 +1,6 @@
 #!/bin/sh
 # netguard - Duo S 自适应网络守护 + Web 配置服务
-# busybox init: rcS 按数值顺序执行, S97 在 S95vlink/S96cosmos-star 之后, S99user(auto.sh) 之前
+# busybox init: rcS 按数值顺序执行, S90 在 S50dropbear 之后、S94sysctl/S95vlink/S96cosmos-star 之前
 #
 # 组件:
 #   /usr/local/bin/netguard.sh      守护状态机 (STA_OK/STA_RETRY/AP)
