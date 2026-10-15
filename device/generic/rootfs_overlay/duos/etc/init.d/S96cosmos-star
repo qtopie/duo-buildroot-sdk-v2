@@ -3,6 +3,7 @@ PROG=/usr/local/bin/cosmos-star
 PIDFILE=/var/run/cosmos-star.pid
 LOGFILE=/var/log/cosmos-star.log
 export UPDATE_INTERVAL=30s
+export TMPDIR=/var/lib/cosmos-star/tmp
 
 wait_route() {
     i=0
@@ -23,9 +24,10 @@ case "$1" in
   start)
     if [ -x "$PROG" ]; then
       wait_route
-      echo "Starting cosmos-star (UPDATE_INTERVAL=30s)..."
-      mkdir -p /root/.cosmos-star/data /var/lib/cosmos-star/update
-      nohup setsid env HOME=/root UPDATE_INTERVAL=30s "$PROG" --config=/root/.config/cosmos-star/config.json >> "$LOGFILE" 2>&1 &
+      echo "Starting cosmos-star (UPDATE_INTERVAL=30s, TMPDIR=/var/lib/cosmos-star/tmp)..."
+      mkdir -p /root/.cosmos-star/data /var/lib/cosmos-star/update /var/lib/cosmos-star/tmp
+      chmod 1777 /var/lib/cosmos-star/tmp
+      nohup setsid env HOME=/root TMPDIR=/var/lib/cosmos-star/tmp UPDATE_INTERVAL=30s "$PROG" --config=/root/.config/cosmos-star/config.json >> "$LOGFILE" 2>&1 &
       echo $! > "$PIDFILE"
       echo "cosmos-star started (pid $(cat $PIDFILE))"
     fi

@@ -477,6 +477,10 @@ static void acm_read_bulk_callback(struct urb *urb)
 	bool stalled = false;
 	bool cooldown = false;
 
+	if (urb->actual_length > 0) {
+		pr_info("cdc-acm: received %d bytes, status=%d\n", urb->actual_length, status);
+	}
+
 	dev_vdbg(&acm->data->dev, "got urb %d, len %d, status %d\n",
 		rb->index, urb->actual_length, status);
 
@@ -553,6 +557,11 @@ static void acm_write_bulk(struct urb *urb)
 	struct acm *acm = wb->instance;
 	unsigned long flags;
 	int status = urb->status;
+
+	pr_info("cdc-acm: wrote len %d/%d, status %d\n",
+		urb->actual_length,
+		urb->transfer_buffer_length,
+		status);
 
 	if (status || (urb->actual_length != urb->transfer_buffer_length))
 		dev_vdbg(&acm->data->dev, "wrote len %d/%d, status %d\n",
@@ -1110,7 +1119,7 @@ static void acm_write_buffers_free(struct acm *acm)
 	struct acm_wb *wb;
 
 	for (wb = &acm->wb[0], i = 0; i < ACM_NW; i++, wb++)
-		usb_free_coherent(acm->dev, acm->writesize, wb->buf, wb->dmah);
+		kfree(wb->buf);
 }
 
 static void acm_read_buffers_free(struct acm *acm)
@@ -1118,8 +1127,7 @@ static void acm_read_buffers_free(struct acm *acm)
 	int i;
 
 	for (i = 0; i < acm->rx_buflimit; i++)
-		usb_free_coherent(acm->dev, acm->readsize,
-			  acm->read_buffers[i].base, acm->read_buffers[i].dma);
+		kfree(acm->read_buffers[i].base);
 }
 
 /* Little helper: write buffers allocate */
@@ -1129,14 +1137,12 @@ static int acm_write_buffers_alloc(struct acm *acm)
 	struct acm_wb *wb;
 
 	for (wb = &acm->wb[0], i = 0; i < ACM_NW; i++, wb++) {
-		wb->buf = usb_alloc_coherent(acm->dev, acm->writesize, GFP_KERNEL,
-		    &wb->dmah);
+		wb->buf = kmalloc(acm->writesize, GFP_KERNEL);
 		if (!wb->buf) {
 			while (i != 0) {
 				--i;
 				--wb;
-				usb_free_coherent(acm->dev, acm->writesize,
-				    wb->buf, wb->dmah);
+				kfree(wb->buf);
 			}
 			return -ENOMEM;
 		}
@@ -1329,6 +1335,14 @@ made_compressed_probe:
 	tty_port_init(&acm->port);
 	acm->port.ops = &acm_port_ops;
 
+	if (usb_endpoint_maxp(epread) == 0) {
+		dev_warn(&intf->dev, "Fixing broken endpoint ep%d maxpacket 0 -> 32\n", usb_endpoint_num(epread));
+		epread->wMaxPacketSize = cpu_to_le16(32);
+	}
+	if (usb_endpoint_maxp(epwrite) == 0) {
+		epwrite->wMaxPacketSize = cpu_to_le16(32);
+	}
+
 	ctrlsize = usb_endpoint_maxp(epctrl);
 	readsize = usb_endpoint_maxp(epread) *
 				(quirks == SINGLE_RX_URB ? 1 : 2);
@@ -1370,7 +1384,7 @@ made_compressed_probe:
 	init_usb_anchor(&acm->delayed);
 	acm->quirks = quirks;
 
-	buf = usb_alloc_coherent(usb_dev, ctrlsize, GFP_KERNEL, &acm->ctrl_dma);
+	buf = kmalloc(ctrlsize, GFP_KERNEL);
 	if (!buf)
 		goto alloc_fail1;
 	acm->ctrl_buffer = buf;
@@ -1386,8 +1400,7 @@ made_compressed_probe:
 		struct acm_rb *rb = &(acm->read_buffers[i]);
 		struct urb *urb;
 
-		rb->base = usb_alloc_coherent(acm->dev, readsize, GFP_KERNEL,
-								&rb->dma);
+		rb->base = kmalloc(readsize, GFP_KERNEL);
 		if (!rb->base)
 			goto alloc_fail4;
 		rb->index = i;
@@ -1397,8 +1410,6 @@ made_compressed_probe:
 		if (!urb)
 			goto alloc_fail4;
 
-		urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
-		urb->transfer_dma = rb->dma;
 		if (usb_endpoint_xfer_int(epread))
 			usb_fill_int_urb(urb, acm->dev, acm->in, rb->base,
 					 acm->readsize,
@@ -1425,7 +1436,6 @@ made_compressed_probe:
 		else
 			usb_fill_bulk_urb(snd->urb, usb_dev, acm->out,
 				NULL, acm->writesize, acm_write_bulk, snd);
-		snd->urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 		if (quirks & SEND_ZERO_PACKET)
 			snd->urb->transfer_flags |= URB_ZERO_PACKET;
 		snd->instance = acm;
@@ -1474,8 +1484,6 @@ skip_countries:
 			 acm->ctrl_buffer, ctrlsize, acm_ctrl_irq, acm,
 			 /* works around buggy devices */
 			 epctrl->bInterval ? epctrl->bInterval : 16);
-	acm->ctrlurb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
-	acm->ctrlurb->transfer_dma = acm->ctrl_dma;
 	acm->notification_buffer = NULL;
 	acm->nb_index = 0;
 	acm->nb_size = 0;
@@ -1523,7 +1531,7 @@ alloc_fail4:
 alloc_fail3:
 	acm_write_buffers_free(acm);
 alloc_fail2:
-	usb_free_coherent(usb_dev, ctrlsize, acm->ctrl_buffer, acm->ctrl_dma);
+	kfree(acm->ctrl_buffer);
 alloc_fail1:
 	tty_port_put(&acm->port);
 alloc_fail:
@@ -1571,7 +1579,7 @@ static void acm_disconnect(struct usb_interface *intf)
 	for (i = 0; i < acm->rx_buflimit; i++)
 		usb_free_urb(acm->read_urbs[i]);
 	acm_write_buffers_free(acm);
-	usb_free_coherent(acm->dev, acm->ctrlsize, acm->ctrl_buffer, acm->ctrl_dma);
+	kfree(acm->ctrl_buffer);
 	acm_read_buffers_free(acm);
 
 	kfree(acm->notification_buffer);

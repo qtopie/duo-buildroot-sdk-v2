@@ -85,6 +85,7 @@ static const struct usb_device_id id_table[] = {
 	{ USB_DEVICE(0x1a86, 0x5523) },
 	{ USB_DEVICE(0x1a86, 0x7522) },
 	{ USB_DEVICE(0x1a86, 0x7523) },
+	{ USB_DEVICE(0x1a86, 0x55d4) },
 	{ USB_DEVICE(0x4348, 0x5523) },
 	{ },
 };
@@ -455,7 +456,8 @@ static void ch341_dtr_rts(struct usb_serial_port *port, int on)
 static void ch341_close(struct usb_serial_port *port)
 {
 	usb_serial_generic_close(port);
-	usb_kill_urb(port->interrupt_in_urb);
+	if (port->interrupt_in_urb)
+		usb_kill_urb(port->interrupt_in_urb);
 }
 
 
@@ -469,17 +471,18 @@ static int ch341_open(struct tty_struct *tty, struct usb_serial_port *port)
 		ch341_set_termios(tty, port, NULL);
 
 	dev_dbg(&port->dev, "%s - submitting interrupt urb\n", __func__);
-	r = usb_submit_urb(port->interrupt_in_urb, GFP_KERNEL);
-	if (r) {
-		dev_err(&port->dev, "%s - failed to submit interrupt urb: %d\n",
-			__func__, r);
-		return r;
+	if (port->interrupt_in_urb) {
+		r = usb_submit_urb(port->interrupt_in_urb, GFP_KERNEL);
+		if (r) {
+			dev_err(&port->dev, "%s - failed to submit interrupt urb: %d\n",
+				__func__, r);
+			return r;
+		}
 	}
 
 	r = ch341_get_status(port->serial->dev, priv);
 	if (r < 0) {
-		dev_err(&port->dev, "failed to read modem status: %d\n", r);
-		goto err_kill_interrupt_urb;
+		dev_dbg(&port->dev, "failed to read modem status: %d (ignored for CDC data)\n", r);
 	}
 
 	r = usb_serial_generic_open(tty, port);
@@ -489,7 +492,8 @@ static int ch341_open(struct tty_struct *tty, struct usb_serial_port *port)
 	return 0;
 
 err_kill_interrupt_urb:
-	usb_kill_urb(port->interrupt_in_urb);
+	if (port->interrupt_in_urb)
+		usb_kill_urb(port->interrupt_in_urb);
 
 	return r;
 }
