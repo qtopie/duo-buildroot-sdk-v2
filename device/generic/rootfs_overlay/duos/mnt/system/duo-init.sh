@@ -1,6 +1,6 @@
 #!/bin/sh
 
-function set_gpio()
+set_gpio()
 {
 	local gpio_num=$1
 	local gpio_val=$2
