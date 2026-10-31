@@ -1,0 +1,110 @@
+#!/bin/sh
+# /etc/init.d/S01user-config
+# Reads user custom configuration from FAT32 boot partition (/boot/duos.conf)
+
+CONF_FILE="/boot/duos.conf"
+
+start() {
+    # Ensure /boot is mounted
+    if ! grep -qs '/boot' /proc/mounts; then
+        mkdir -p /boot
+        mount -t vfat /dev/mmcblk0p1 /boot 2>/dev/null || mount -t vfat /dev/mmcblk1p1 /boot 2>/dev/null || true
+    fi
+
+    if [ ! -f "$CONF_FILE" ]; then
+        echo "No /boot/duos.conf found, using system defaults."
+        return 0
+    fi
+
+    echo "==> Loading user custom configuration from $CONF_FILE..."
+    . "$CONF_FILE"
+
+    # 1. Custom WLAN MAC Address
+    if [ -n "$WLAN_MAC" ]; then
+        echo "Configuring WLAN MAC: $WLAN_MAC"
+        mkdir -p /mnt/system/firmware/aic8800
+        echo "MAC_ADDR=$WLAN_MAC" > /mnt/system/firmware/aic8800/rwnx_settings.ini
+        mkdir -p /lib/firmware/aic8800
+        echo "MAC_ADDR=$WLAN_MAC" > /lib/firmware/aic8800/rwnx_settings.ini
+        if [ -f /lib/firmware/aic8800/aic_userconfig_8800d80.txt ]; then
+            sed -i "/^MAC_ADDR=/d" /lib/firmware/aic8800/aic_userconfig_8800d80.txt 2>/dev/null || true
+            echo "MAC_ADDR=$WLAN_MAC" >> /lib/firmware/aic8800/aic_userconfig_8800d80.txt 2>/dev/null || true
+        fi
+    fi
+
+    # 2. Custom Ethernet MAC & IP Address
+    if [ -n "$ETH_MAC" ]; then
+        echo "Configuring ETH MAC: $ETH_MAC"
+        ip link set eth0 down 2>/dev/null || true
+        ip link set eth0 address "$ETH_MAC" 2>/dev/null || true
+        ip link set eth0 up 2>/dev/null || true
+    fi
+
+    if [ -n "$ETH_IP" ]; then
+        local mask="${ETH_NETMASK:-255.255.255.0}"
+        local prefix=24
+        case "$mask" in
+            255.255.255.0) prefix=24 ;;
+            255.255.0.0)   prefix=16 ;;
+            255.0.0.0)     prefix=8 ;;
+            *)              prefix="$mask" ;;
+        esac
+        echo "Configuring ETH IP: $ETH_IP/$prefix"
+        ip addr flush dev eth0 2>/dev/null || true
+        ip addr add "${ETH_IP}/${prefix}" dev eth0 2>/dev/null || true
+        ip link set eth0 up 2>/dev/null || true
+    fi
+
+    # 3. Custom Wi-Fi Credentials
+    if [ -n "$WIFI_SSID" ]; then
+        echo "Configuring Wi-Fi for SSID: $WIFI_SSID"
+        cat > /etc/wpa_supplicant.conf <<EOF
+ctrl_interface=/var/run/wpa_supplicant
+update_config=1
+
+network={
+	ssid="$WIFI_SSID"
+	psk="$WIFI_PSK"
+	key_mgmt=WPA-PSK
+}
+EOF
+        # Update netguard if present
+        if [ -d /etc/netguard ]; then
+            cat > /etc/netguard/netguard.conf <<EOF
+WIFI_SSID="$WIFI_SSID"
+WIFI_PSK="$WIFI_PSK"
+EOF
+        fi
+    fi
+
+    # 4. User SSH Authorized Keys
+    if [ -f /boot/authorized_keys ]; then
+        echo "Injecting /boot/authorized_keys to /root/.ssh/authorized_keys"
+        mkdir -p /root/.ssh && chmod 700 /root/.ssh
+        cp -f /boot/authorized_keys /root/.ssh/authorized_keys
+        chmod 600 /root/.ssh/authorized_keys
+    elif [ -f /boot/id_rsa.pub ]; then
+        echo "Injecting /boot/id_rsa.pub to /root/.ssh/authorized_keys"
+        mkdir -p /root/.ssh && chmod 700 /root/.ssh
+        cp -f /boot/id_rsa.pub /root/.ssh/authorized_keys
+        chmod 600 /root/.ssh/authorized_keys
+    fi
+
+    # 5. Disable Wi-Fi power save to prevent SDIO bus sleep and netguard AP flapping
+    if ip link show wlan0 >/dev/null 2>&1; then
+        echo "Disabling Wi-Fi power save on wlan0..."
+        iw dev wlan0 set power_save off 2>/dev/null || true
+    fi
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        ;;
+    *)
+        echo "Usage: $0 {start|stop}"
+        exit 1
+        ;;
+esac
