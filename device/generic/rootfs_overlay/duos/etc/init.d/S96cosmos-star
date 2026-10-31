@@ -1,7 +1,12 @@
 #!/bin/sh
+#
+# cosmos-star (Edge Node) autostart
+#
+
 PROG=/usr/local/bin/cosmos-star
 PIDFILE=/var/run/cosmos-star.pid
 LOGFILE=/var/log/cosmos-star.log
+DATA_DIR=/var/lib/cosmos-star
 export UPDATE_INTERVAL=30s
 export TMPDIR=/var/lib/cosmos-star/tmp
 
@@ -20,39 +25,88 @@ wait_route() {
     return 0
 }
 
-case "$1" in
-  start)
-    if [ -x "$PROG" ]; then
-      wait_route
-      echo "Starting cosmos-star (UPDATE_INTERVAL=30s, TMPDIR=/var/lib/cosmos-star/tmp)..."
-      mkdir -p /root/.cosmos-star/data /var/lib/cosmos-star/update /var/lib/cosmos-star/tmp
-      chmod 1777 /var/lib/cosmos-star/tmp
-      nohup setsid env HOME=/root TMPDIR=/var/lib/cosmos-star/tmp UPDATE_INTERVAL=30s "$PROG" --config=/root/.config/cosmos-star/config.json >> "$LOGFILE" 2>&1 &
-      echo $! > "$PIDFILE"
-      echo "cosmos-star started (pid $(cat $PIDFILE))"
+start() {
+    if [ ! -x "$PROG" ]; then
+        echo "ERROR: $PROG not found or not executable"
+        exit 1
     fi
-    ;;
-  stop)
+
+    EXISTING_PIDS=$(pidof cosmos-star 2>/dev/null)
+    if [ -n "$EXISTING_PIDS" ]; then
+        echo "cosmos-star is already running (pids: $EXISTING_PIDS)"
+        echo "$EXISTING_PIDS" | awk '{print $1}' > "$PIDFILE"
+        return 0
+    fi
+
+    echo "Starting cosmos-star (UPDATE_INTERVAL=30s, TMPDIR=/var/lib/cosmos-star/tmp)..."
+    wait_route
+
+    mkdir -p "$DATA_DIR/tmp" "$DATA_DIR/update" /root/.cosmos-star/data /var/run /var/log
+    chmod 1777 "$DATA_DIR/tmp" 2>/dev/null || true
+
+    nohup setsid env HOME=/root TMPDIR="$DATA_DIR/tmp" UPDATE_INTERVAL=30s "$PROG" --config=/root/.config/cosmos-star/config.json >> "$LOGFILE" 2>&1 &
+    NEW_PID=$!
+    echo "$NEW_PID" > "$PIDFILE"
+    echo "cosmos-star started (pid $NEW_PID)"
+}
+
+stop() {
     echo "Stopping cosmos-star..."
+    TARGET_PIDS=$(pidof cosmos-star 2>/dev/null)
     if [ -f "$PIDFILE" ]; then
-      PID=$(cat "$PIDFILE")
-      kill -TERM "$PID" 2>/dev/null || true
-      i=0
-      while [ $i -lt 15 ] && kill -0 "$PID" 2>/dev/null; do
-        sleep 1
-        i=$((i+1))
-      done
-      kill -9 "$PID" 2>/dev/null || true
-      rm -f "$PIDFILE"
+        FILE_PID=$(cat "$PIDFILE" 2>/dev/null)
+        [ -n "$FILE_PID" ] && TARGET_PIDS="$TARGET_PIDS $FILE_PID"
     fi
-    ;;
-  restart)
-    $0 stop
-    sleep 2
-    $0 start
-    ;;
-  *)
-    echo "Usage: $0 {start|stop|restart}"
-    exit 1
-    ;;
+
+    if [ -n "$TARGET_PIDS" ]; then
+        for p in $TARGET_PIDS; do
+            kill -TERM "$p" 2>/dev/null || true
+        done
+        i=0
+        while [ $i -lt 10 ] && pidof cosmos-star >/dev/null 2>&1; do
+            sleep 1
+            i=$((i+1))
+        done
+        if pidof cosmos-star >/dev/null 2>&1; then
+            echo "cosmos-star did not stop gracefully, force killing..."
+            killall -9 cosmos-star 2>/dev/null || true
+            sleep 1
+        fi
+    fi
+    rm -f "$PIDFILE"
+    echo "cosmos-star stopped"
+}
+
+status() {
+    PIDS=$(pidof cosmos-star 2>/dev/null)
+    if [ -n "$PIDS" ]; then
+        echo "cosmos-star is running (pids: $PIDS)"
+        exit 0
+    else
+        echo "cosmos-star is stopped"
+        exit 1
+    fi
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        sleep 1
+        start
+        ;;
+    status)
+        status
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
 esac
+
+exit $?

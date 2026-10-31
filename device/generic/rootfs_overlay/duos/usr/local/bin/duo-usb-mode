@@ -1,0 +1,143 @@
+#!/bin/sh
+# Milk-V Duo S USB Mode Management Tool
+# Supports querying and switching between Type-A Host Mode and Type-C Device Mode.
+
+SYSTEM_PATH="${SYSTEM_PATH:-/mnt/system}"
+USB_LINK="${SYSTEM_PATH}/usb.sh"
+HOST_SCRIPT="${SYSTEM_PATH}/usb-host.sh"
+NCM_SCRIPT="${SYSTEM_PATH}/usb-ncm.sh"
+
+show_usage() {
+    cat << 'EOF'
+Usage: duo-usb-mode <command> [options]
+
+Commands:
+  status               Show current USB hardware role, GPIO state and storage devices
+  host [--now]         Configure Type-A USB 2.0 Host mode (persists across reboots)
+  device [--now]       Configure Type-C USB Gadget (NCM) mode (persists across reboots)
+
+Options:
+  --now                Apply hardware pin and mode changes immediately without reboot
+
+Official symlink equivalent:
+  ln -sf /mnt/system/usb-host.sh /mnt/system/usb.sh   (Switch to Host)
+  ln -sf /mnt/system/usb-ncm.sh /mnt/system/usb.sh    (Switch to Device)
+EOF
+}
+
+find_gpio_base() {
+    local target="$1"
+    local fallback="$2"
+    for chip in /sys/class/gpio/gpiochip*; do
+        [ -d "$chip" ] || continue
+        local label=""
+        if [ -f "$chip/label" ]; then
+            label=$(cat "$chip/label" 2>/dev/null)
+        fi
+        case "$label" in
+            *"$target"*)
+                cat "$chip/base" 2>/dev/null && return 0
+                ;;
+        esac
+    done
+    echo "$fallback"
+}
+
+get_current_mode() {
+    if [ -L "${USB_LINK}" ]; then
+        local target=$(readlink "${USB_LINK}")
+        case "${target}" in
+            *host*) echo "host" ;;
+            *ncm*|*rndis*|*device*) echo "device" ;;
+            *) echo "unknown" ;;
+        esac
+    else
+        echo "unconfigured"
+    fi
+}
+
+cmd_status() {
+    local mode=$(get_current_mode)
+    local porta_base=$(find_gpio_base "3020000" "544")
+    local portb_base=$(find_gpio_base "3021000" "576")
+    if [ -d "/sys/class/gpio/gpiochip480" ]; then
+        porta_base=480
+        portb_base=448
+    fi
+    local sel_pin=$((porta_base + 30))
+    local en_pin=$((portb_base + 5))
+
+    local sel_val=$(cat /sys/class/gpio/gpio${sel_pin}/value 2>/dev/null || echo "unexported")
+    local en_val=$(cat /sys/class/gpio/gpio${en_pin}/value 2>/dev/null || echo "unexported")
+
+    echo "=========================================="
+    echo " Milk-V Duo S USB Interface Status"
+    echo "=========================================="
+    echo "Configured Boot Target : ${mode} (${USB_LINK} -> $(readlink ${USB_LINK} 2>/dev/null || echo 'none'))"
+    echo "USB_SELECT (PortA[30], GPIO ${sel_pin}) : ${sel_val} (0=Type-C, 1=Type-A)"
+    echo "USB_EN     (PortB[5],  GPIO ${en_pin}) : ${en_val} (0=5V VBUS Off, 1=5V VBUS On)"
+    
+    if [ "${sel_val}" = "1" ] && [ "${en_val}" = "1" ]; then
+        echo "Active Hardware Role   : Type-A USB 2.0 Host (VBUS 5V Enabled)"
+    elif [ "${sel_val}" = "0" ] && [ "${en_val}" = "0" ]; then
+        echo "Active Hardware Role   : Type-C USB Peripheral/Gadget (VBUS 5V Disabled)"
+    else
+        echo "Active Hardware Role   : Transitional / Undefined"
+    fi
+
+    echo "------------------------------------------"
+    echo "Detected USB Block Devices:"
+    local disks=$(ls -d /sys/block/sd* 2>/dev/null)
+    if [ -n "${disks}" ]; then
+        for disk in ${disks}; do
+            local devname=$(basename "${disk}")
+            local model=$(cat "${disk}/device/model" 2>/dev/null | xargs)
+            local size_sectors=$(cat "${disk}/size" 2>/dev/null || echo 0)
+            local size_mb=$((size_sectors * 512 / 1024 / 1024))
+            echo "  - /dev/${devname}: ${model} (${size_mb} MB)"
+            for part in /dev/${devname}[0-9]*; do
+                [ -b "${part}" ] && echo "      Partition: ${part}"
+            done
+        done
+    else
+        echo "  (No /dev/sd* devices detected)"
+    fi
+    echo "=========================================="
+}
+
+cmd_switch() {
+    local target_mode="$1"
+    local apply_now="$2"
+
+    if [ "${target_mode}" = "host" ]; then
+        ln -sf "${HOST_SCRIPT}" "${USB_LINK}"
+        echo "Set default boot mode to: Type-A USB Host (${USB_LINK} -> ${HOST_SCRIPT})"
+        if [ "${apply_now}" = "--now" ] || [ "$#" -eq 1 ]; then
+            echo "Applying hardware pins immediately..."
+            sh "${HOST_SCRIPT}"
+        fi
+    elif [ "${target_mode}" = "device" ]; then
+        ln -sf "${NCM_SCRIPT}" "${USB_LINK}"
+        echo "Set default boot mode to: Type-C USB Device (${USB_LINK} -> ${NCM_SCRIPT})"
+        if [ "${apply_now}" = "--now" ] || [ "$#" -eq 1 ]; then
+            echo "Applying hardware pins immediately..."
+            sh "${NCM_SCRIPT}"
+        fi
+    fi
+}
+
+case "$1" in
+    status)
+        cmd_status
+        ;;
+    host)
+        cmd_switch host "$2"
+        ;;
+    device|ncm)
+        cmd_switch device "$2"
+        ;;
+    *)
+        show_usage
+        exit 1
+        ;;
+esac
